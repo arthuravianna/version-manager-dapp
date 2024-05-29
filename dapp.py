@@ -58,6 +58,12 @@ def handle_advance(rollup: Rollup, data: RollupData) -> bool:
         module_func = getattr(module, "setup")
         module_func(dapp, json_router, url_router, URLParameters)
 
+        run_cmd(["git", "add", "."])
+        run_cmd(["git", "commit", "-m", "new version"])
+        # git diff HEAD^ HEAD
+        diff = run_cmd(["git", "diff", "HEAD^", "HEAD"])
+        rollup.notice(str2hex(diff))
+
     except Exception as e:
         rollup.report(str2hex(e))
         return False
@@ -89,15 +95,16 @@ def git_log(rollup: Rollup, data: RollupData) -> bool:
 
 if __name__ == '__main__':
     # repo ignores everything except src/ directory
-    # with open(".gitignore", "w") as f:
-    #     print("dapp.py", file=f)
-    #     print("version_manager.conf.json", file=f)
+    with open(".gitignore", "w") as f:
+        files_to_ignore = ["dapp.py", "version_manager.conf.json", "__pycache__", "tmp", "requirements.txt"]
+        for filename in files_to_ignore:
+            print(filename, file=f)
     
-    # print(run_cmd(["git", "init", "--initial-branch=main"]))
-    # run_cmd(["git", "add", "."])
-    # run_cmd(["git", "config", "--global", "user.name", "version-manager"])
-    # print(run_cmd(["git", "commit", "-m", "initial version"]))
-    # run_cmd(["git", "tag", f"v{version_manager['VERSION']}"])
+    print(run_cmd(["git", "init", "--initial-branch=main"]))
+    run_cmd(["git", "add", "."])
+    run_cmd(["git", "config", "--global", "user.name", "version-manager"])
+    print(run_cmd(["git", "commit", "-m", "initial version"]))
+    run_cmd(["git", "tag", f"v{version_manager['VERSION']}"])
 
     module = importlib.import_module("src.main")
     module_func = getattr(module, "setup")
