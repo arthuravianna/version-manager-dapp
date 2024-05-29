@@ -1,0 +1,4 @@
+--find-links https://prototyp3-dev.github.io/pip-wheels-riscv/wheels/
+
+requests == 2.31.0
+python-cartesi == 0.1.1

@@ -1,0 +1,5 @@
+.cartesi
+.venv
+tmp
+__pycache__
+*.tar.gz
