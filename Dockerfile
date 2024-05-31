@@ -33,7 +33,9 @@ pip install -r requirements.txt --no-cache
 find /usr/local/lib -type d -name __pycache__ -exec rm -r {} +
 EOF
 
-COPY ./dapp.py .
+COPY ./version_manager.py .
+COPY ./version_manager_server.py .
+COPY ./entrypoint.sh .
 COPY ./version_manager.conf.json .
 COPY ./src /opt/cartesi/dapp/src
 
@@ -41,5 +43,4 @@ RUN chown dapp:dapp /opt/cartesi/dapp
 
 ENV ROLLUP_HTTP_SERVER_URL="http://127.0.0.1:5004"
 
-ENTRYPOINT ["rollup-init"]
-CMD ["python3", "dapp.py"]
+ENTRYPOINT ["./entrypoint.sh"]
