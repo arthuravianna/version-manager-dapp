@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-flask --app version_manager_server run --debug > server_log.txt 2>&1 &
+flask --app version_manager_server run > server_log.txt 2>&1 &
 
 # wait for server to start
 echo "Waiting for version-manager-server..."

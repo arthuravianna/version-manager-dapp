@@ -1,9 +1,12 @@
 import logging
 
-from cartesi import Rollup, RollupData
+from cartesi import DApp, Rollup, RollupData, URLRouter, URLParameters
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
+dapp = DApp()
+url_router = URLRouter()
+dapp.add_router(url_router)
 
 
 def str2hex(str):
@@ -11,26 +14,27 @@ def str2hex(str):
     return "0x" + str.encode("utf-8").hex()
 
 
-
-def setup(HLFdapp, HLFjson_router, HLFurl_router, URLParameters):
-    
-    @HLFurl_router.advance('hello/')
-    def hello_world_advance(rollup: Rollup, data: RollupData) -> bool:
-        rollup.notice(str2hex('Hello World'))
-        return True
+@url_router.advance('hello/')
+def hello_world_advance(rollup: Rollup, data: RollupData) -> bool:
+    rollup.notice(str2hex('Hello World'))
+    return True
 
 
-    @HLFurl_router.inspect('hello/')
-    def hello_world_inspect(rollup: Rollup, data: RollupData) -> bool:
-        rollup.report(str2hex('Hello World'))
-        return True
+@url_router.inspect('hello/')
+def hello_world_inspect(rollup: Rollup, data: RollupData) -> bool:
+    rollup.report(str2hex('Hello World'))
+    return True
 
 
-    @HLFurl_router.inspect('hello/{name}')
-    def hello_world_inspect_parms(rollup: Rollup, params: URLParameters) -> bool:
-        msg = f'Hello {params.path_params["name"]}'
-        if 'suffix' in params.query_params:
-            msg += params.query_params["suffix"][0]
+@url_router.inspect('hello/{name}')
+def hello_world_inspect_parms(rollup: Rollup, params: URLParameters) -> bool:
+    msg = f'Hello {params.path_params["name"]}'
+    if 'suffix' in params.query_params:
+        msg += params.query_params["suffix"][0]
 
-        rollup.report(str2hex(msg))
-        return True
+    rollup.report(str2hex(msg))
+    return True
+
+
+if __name__ == '__main__':
+    dapp.run()

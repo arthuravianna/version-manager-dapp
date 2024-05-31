@@ -1,12 +1,13 @@
 import logging
 import os
 import subprocess
-import importlib
 import json
 import base64
 import requests
+import signal
+import time
 
-from cartesi import DApp, Rollup, RollupData, JSONRouter, URLRouter, URLParameters
+from cartesi import DApp, Rollup, RollupData, JSONRouter, URLRouter
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -23,6 +24,8 @@ VERSION_MANAGER_SERVER_URL = "http://127.0.0.1:5000"
 version_manager = None
 with open("version_manager.conf.json", "r") as f:
     version_manager = json.load(f)
+    for i in range(len(version_manager["DEVELOPERS"])):
+        version_manager["DEVELOPERS"][i] = version_manager["DEVELOPERS"][i].lower()
 
 
 child_dapp_process = None
@@ -39,7 +42,7 @@ def run_cmd(cmd, shell=False):
 
 def is_developer(msg_sender):
     developers = version_manager.get("DEVELOPERS")
-    if developers and not msg_sender in developers:
+    if developers and not msg_sender.lower() in developers:
         return False
     
     return True
@@ -47,28 +50,28 @@ def is_developer(msg_sender):
 
 def run_child_dapp():
     global child_dapp_process
-    child_dapp_process = subprocess.Popen("exec ./src/entrypoint.sh", stdout=subprocess.PIPE, shell=True)
+    child_dapp_process = subprocess.Popen("./src/entrypoint.sh", stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
 
 def kill_child_dapp():
     global child_dapp_process
-    child_dapp_process.kill()
+    os.killpg(os.getpgid(child_dapp_process.pid), signal.SIGTERM)
 
 #
 # INPUT HANDLERS
 #
 
 @json_router.advance({"version-manager": "update-dapp"})
-def handle_advance(rollup: Rollup, data: RollupData) -> bool:
+def update_dapp(rollup: Rollup, data: RollupData) -> bool:
     try:
-        if not is_developer(data.metadata.msg_sender):
-            raise Exception(f"Error: {data.metadata.msg_sender} is not registered as a developer.")
+        # if not is_developer(data["metadata"]["msg_sender"]):
+        #     raise Exception(f"Error: {data['metadata']['msg_sender']} is not registered as a developer.")
         
-        data = data.json_payload()
+        data_json = data.json_payload()
         tar_filename = "new_commit.tar.gz"
 
         # data["src"] contains the fs with the new code
         with open(tar_filename, "wb") as f:
-            b64 = data["src"].encode()
+            b64 = data_json["src"].encode()
             f.write(base64.b64decode(b64))
         
         # extract tar.gz with the new code
@@ -76,25 +79,22 @@ def handle_advance(rollup: Rollup, data: RollupData) -> bool:
         run_cmd(["tar", "--strip-components", "1", "-C", "tmp", "-xvf", tar_filename])
 
         os.remove(tar_filename)
+
+        kill_child_dapp()
         
         # move new code to src directory
         run_cmd("mv tmp/* src/", shell=True)
 
         run_child_dapp()
 
-        # module = importlib.import_module("src.main")
-        # module_func = getattr(module, "setup")
-        # module_func(dapp, json_router, url_router, URLParameters)
-
         run_cmd(["git", "add", "."])
-        run_cmd(["git", "config", "--global", "user.name", data.metadata.msg_sender])
+        run_cmd(["git", "config", "--global", "user.name", data["metadata"]["msg_sender"]])
         run_cmd(["git", "commit", "-m", "new version"])
-        # git diff HEAD^ HEAD
         diff = run_cmd(["git", "diff", "HEAD^", "HEAD"])
         rollup.notice(str2hex(diff))
 
     except Exception as e:
-        rollup.report(str2hex(e))
+        rollup.report(str2hex(str(e)))
         return False
     
     return True
@@ -124,29 +124,50 @@ def git_ls(rollup: Rollup, data: RollupData) -> bool:
 @dapp.advance()
 def forward_advance(rollup: Rollup, data: RollupData):
     input_data = {
-        "metadata": {
-            "msg_sender": data.metadata.msg_sender,
-            "epoch_index": data.metadata.epoch_index,
-            "input_index": data.metadata.input_index,
-            "block_number": data.metadata.block_number,
-            "timestamp": data.metadata.timestamp
-        },
-        "payload": data.payload
+        "request_type": "advance_state",
+        "data": {
+            "metadata": {
+                "msg_sender": data.metadata.msg_sender,
+                "epoch_index": data.metadata.epoch_index,
+                "input_index": data.metadata.input_index,
+                "block_number": data.metadata.block_number,
+                "timestamp": data.metadata.timestamp
+            },
+            "payload": data.payload
+        }
     }
 
     requests.post(f"{VERSION_MANAGER_SERVER_URL}/input", json=input_data)
+
+    return processing_result()
 
 @dapp.inspect()
 def forward_inspect(rollup: Rollup, data: RollupData):
     input_data = {
-        "metadata": {},
-        "payload": data.payload
+        "request_type": "inspect_state",
+        "data": {
+            "payload": data.payload
+        }
     }
 
     requests.post(f"{VERSION_MANAGER_SERVER_URL}/input", json=input_data)
 
+    return processing_result()
 
 
+def processing_result():
+    result = None
+
+    wait = 2
+    while result is None:
+        time.sleep(wait)
+        response = requests.get(f"{VERSION_MANAGER_SERVER_URL}/result")
+        response_json = response.json()
+        
+        result = response_json.get("result")
+        wait += 1
+    
+    return result
 
 
 if __name__ == '__main__':
@@ -158,18 +179,9 @@ if __name__ == '__main__':
     print(run_cmd(["git", "init", "--initial-branch=main"]))
     run_cmd(["git", "add", "."])
     
-    # --author="John Doe <>"
     run_cmd(["git", "config", "--global", "user.name", "version-manager"])
     print(run_cmd(["git", "commit", "-m", "initial version"]))
     run_cmd(["git", "tag", f"v{version_manager['VERSION']}"])
-
-    # module = importlib.import_module("src.main")
-    # module_func = getattr(module, "setup")
-    # module_func(dapp, json_router, url_router, URLParameters)
-
-    # flask --app version_manager_server run
-    #subprocess.Popen("flask --app version_manager_server run", shell=True)
-    #print("FLASK PROCESS RUNNING")
 
     run_child_dapp()
 
