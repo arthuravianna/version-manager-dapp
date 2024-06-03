@@ -28,7 +28,7 @@ The default Child DApp is an "echo" DApp, send an inspect to it and check the re
 time curl -s http://localhost:8080/inspect/I_would_like_to_update_my_DApp | jq -r '.reports[0].payload' | xxd -r -p
 ```
 
-Now, let's send a new code to update that updates the Child DApp to a "hello" DApp. For this, use the script on `misc` directory. The script accepts an directory name as parameter, it should contain a new DApp on this directory.
+Now, let's send a new code that updates the Child DApp to a "hello" DApp. For this, use the script on `misc` directory. The script requires an directory name as parameter that should contain a new DApp.
 ```shell
 cd misc
 ./update.sh new_src
