@@ -5,22 +5,67 @@ import json
 import base64
 import requests
 import signal
-import time
+import threading
+import datetime
 
-from cartesi import DApp, Rollup, RollupData, JSONRouter, URLRouter
+from flask import Flask, request, make_response
 
-LOGGER = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
-dapp = DApp()
+app = Flask(__name__)
 
-url_router = URLRouter()
-dapp.add_router(url_router)
+input_data = None
+processing_input = False
+result = None
+rollup_server = os.environ["ROLLUP_HTTP_SERVER_URL"]
+dapp_initialzied = False
 
-json_router = JSONRouter()
-dapp.add_router(json_router)
+
+@app.route("/notice", methods=["POST"])
+def notice():
+    data = request.get_json()
+    res = requests.post(rollup_server + "/notice", json=data)
+    return make_response(res.text, res.status_code)
+
+@app.route("/voucher", methods=["POST"])
+def voucher():
+    data = request.get_json()
+    res = requests.post(rollup_server + "/voucher", json=data)
+    return make_response(res.text, res.status_code)
+
+@app.route("/report", methods=["POST"])
+def report():
+    data = request.get_json()
+    res = requests.post(rollup_server + "/report", json=data)
+    return make_response(res.text, res.status_code)
+
+
+@app.route("/finish", methods=['POST'])
+def finish():
+    global input_data, processing_input, result, dapp_initialzied
+
+    if not dapp_initialzied: dapp_initialzied = True
+    
+    # not processing and has input
+    if not processing_input and input_data:
+        processing_input = True
+        return input_data
+
+    # processing and has input = processing finished
+    elif input_data:
+        processing_input = False
+        input_data = None
+
+        data = request.get_json()
+        result = data["status"]
+    
+
+    return make_response("no rollup request available", 202)
+
+
+logging.basicConfig(level="INFO")
+logger = logging.getLogger(__name__)
+forwarded = False
 
 # load version manager conf
-VERSION_MANAGER_SERVER_URL = "http://127.0.0.1:5000"
 version_manager = None
 with open("version_manager.conf.json", "r") as f:
     version_manager = json.load(f)
@@ -34,6 +79,16 @@ child_dapp_process = None
 def str2hex(str):
     """Encodes a string as a hex string"""
     return "0x" + str.encode("utf-8").hex()
+
+def hex2str(hex):
+    """Decodes a hex string into a regular string"""
+    return bytes.fromhex(hex[2:]).decode("utf-8")
+
+
+def post(endpoint, json):
+    response = requests.post(f"{rollup_server}/{endpoint}", json=json)
+    logger.info(f"Received {endpoint} status {response.status_code} body {response.content}")
+
 
 def run_cmd(cmd, shell=False):
     output = subprocess.run(cmd, capture_output=True, shell=shell)
@@ -49,8 +104,22 @@ def is_developer(msg_sender):
 
 
 def run_child_dapp():
-    global child_dapp_process
+    global child_dapp_process, dapp_initialzied
+    dapp_initialzied = False
+
     child_dapp_process = subprocess.Popen("./src/entrypoint.sh", stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
+
+def wait_child_dapp():
+    global dapp_initialzied
+    while not dapp_initialzied: pass
+
+def stop_child_dapp():
+    global child_dapp_process
+    os.killpg(os.getpgid(child_dapp_process.pid), signal.SIGSTOP)
+
+def resume_child_dapp():
+    global child_dapp_process
+    os.killpg(os.getpgid(child_dapp_process.pid), signal.SIGCONT)
 
 def kill_child_dapp():
     global child_dapp_process
@@ -60,20 +129,18 @@ def kill_child_dapp():
 # INPUT HANDLERS
 #
 
-@json_router.advance({"version-manager": "update-dapp"})
-def update_dapp(rollup: Rollup, data: RollupData) -> bool:
+def update_dapp(metadata, data_json):
     try:
-        # if not is_developer(data["metadata"]["msg_sender"]):
-        #     raise Exception(f"Error: {data['metadata']['msg_sender']} is not registered as a developer.")
+        if not is_developer(metadata["msg_sender"]):
+            raise Exception(f"Error: {metadata['msg_sender']} is not registered as a developer.")
         
-        data_json = data.json_payload()
         tar_filename = "new_commit.tar.gz"
 
         # data["src"] contains the fs with the new code
         with open(tar_filename, "wb") as f:
             b64 = data_json["src"].encode()
             f.write(base64.b64decode(b64))
-        
+
         # extract tar.gz with the new code
         os.makedirs("tmp", exist_ok=True)
         run_cmd(["tar", "--strip-components", "1", "-C", "tmp", "-xvf", tar_filename])
@@ -85,104 +152,152 @@ def update_dapp(rollup: Rollup, data: RollupData) -> bool:
         # move new code to src directory
         run_cmd("mv tmp/* src/", shell=True)
 
-        run_child_dapp()
-
         run_cmd(["git", "add", "."])
-        run_cmd(["git", "config", "--global", "user.name", data["metadata"]["msg_sender"]])
-        run_cmd(["git", "commit", "-m", "new version"])
+
+        d = datetime.datetime.fromtimestamp(
+            metadata["timestamp"],
+            datetime.timezone(datetime.timedelta(hours=0))
+        )
+        date_str = d.strftime("%a %b %d %H:%M:%S %Y %z")
+        run_cmd([
+            "git",
+            "-c", f"user.name={metadata['msg_sender']}",
+            "commit", f"--date=\"{date_str}\"", "-m", "new version"
+        ])
+        
+        version = data_json.get("VERSION")
+        if not version:
+            version = d.strftime("%y.%m.%d")
+        run_cmd(["git", "tag", f"v{version}"])
+        
         diff = run_cmd(["git", "diff", "HEAD^", "HEAD"])
-        rollup.notice(str2hex(diff))
+        post("notice", {"payload": str2hex(diff)})
+
+        run_child_dapp()
+        wait_child_dapp()
 
     except Exception as e:
-        rollup.report(str2hex(str(e)))
-        return False
+        post("report", {"payload": str2hex(str(e))})
+        return "reject"
     
-    return True
+    return "accept"
 
-
-
-
-@url_router.inspect('git/tag')
-def git_tag_list(rollup: Rollup, data: RollupData) -> bool:
+def git_tag_list():
     res = run_cmd(["git", "tag", "-l"])
-    rollup.report(str2hex(res))
-    return True
+    post("report", {"payload": (str2hex(res))})
+    return "accept"
 
-@url_router.inspect('git/log')
-def git_log(rollup: Rollup, data: RollupData) -> bool:
+def git_log():
     res = run_cmd(["git", "log"])
-    rollup.report(str2hex(res))
-    return True
+    post("report", {"payload": (str2hex(res))})
+    return "accept"
 
-@url_router.inspect('git/ls')
-def git_ls(rollup: Rollup, data: RollupData) -> bool:
+def git_ls():
     res = run_cmd(["git", "ls-tree", "--full-tree", "-r", "HEAD"])
-    rollup.report(str2hex(res))
-    return True
+    post("report", {"payload": (str2hex(res))})
+    return "accept"
 
 
-@dapp.advance()
-def forward_advance(rollup: Rollup, data: RollupData):
+def forward_advance(data):
+    global forwarded, input_data
+
+    forwarded = True
     input_data = {
         "request_type": "advance_state",
-        "data": {
-            "metadata": {
-                "msg_sender": data.metadata.msg_sender,
-                "epoch_index": data.metadata.epoch_index,
-                "input_index": data.metadata.input_index,
-                "block_number": data.metadata.block_number,
-                "timestamp": data.metadata.timestamp
-            },
-            "payload": data.payload
-        }
+        "data": data
     }
 
-    requests.post(f"{VERSION_MANAGER_SERVER_URL}/input", json=input_data)
 
-    return processing_result()
-
-@dapp.inspect()
-def forward_inspect(rollup: Rollup, data: RollupData):
+def forward_inspect(data):
+    global forwarded, input_data
+    
+    forwarded = True
     input_data = {
         "request_type": "inspect_state",
-        "data": {
-            "payload": data.payload
-        }
+        "data": data
     }
 
-    requests.post(f"{VERSION_MANAGER_SERVER_URL}/input", json=input_data)
 
-    return processing_result()
+def handle_advance(data):
+    try:
+        payload_str = hex2str(data["payload"])
+        try:
+            payload_json = json.loads(payload_str)
+
+            version_manager_op = payload_json.get("version-manager")
+            if version_manager_op and version_manager_op == "update-dapp":
+                update_dapp(data["metadata"], payload_json)
+                return "accept"
+            else:
+                forward_advance(data)    
+        except json.decoder.JSONDecodeError:
+            forward_advance(data)
+
+    except Exception as e:
+        requests.post(rollup_server+"/report", json={"payload": str2hex(str(e))})
+        return "reject"
+
+def handle_inspect(data):
+    try:
+        payload_str = hex2str(data["payload"])
+
+        if len(payload_str) == 7 and payload_str[:7] == "git/tag":
+            git_tag_list()
+            return "accept"
+        elif len(payload_str) == 7 and payload_str[:7] == "git/log":
+            git_log()
+            return "accept"
+        elif len(payload_str) == 6 and payload_str[:6] == "git/ls":
+            git_ls()
+            return "accept"
+        else:
+            forward_inspect(data)
+
+    except Exception as e:
+        requests.post(rollup_server+"/report", json={"payload": str2hex(str(e))})
+        return "reject"
 
 
-def processing_result():
-    result = None
+if __name__ == "__main__":
+    # start flask server in a non-blocking way
+    threading.Thread(target=lambda: app.run()).start()
 
-    wait = 2
-    while result is None:
-        time.sleep(wait)
-        response = requests.get(f"{VERSION_MANAGER_SERVER_URL}/result")
-        response_json = response.json()
-        
-        result = response_json.get("result")
-        wait += 1
-    
-    return result
-
-
-if __name__ == '__main__':
     # repo ignores everything except src/ directory
     with open(".gitignore", "w") as f:
         print("/*", file=f)
         print("!src/", file=f)
-    
+
     print(run_cmd(["git", "init", "--initial-branch=main"]))
     run_cmd(["git", "add", "."])
-    
+
     run_cmd(["git", "config", "--global", "user.name", "version-manager"])
     print(run_cmd(["git", "commit", "-m", "initial version"]))
     run_cmd(["git", "tag", f"v{version_manager['VERSION']}"])
 
     run_child_dapp()
+    wait_child_dapp()
 
-    dapp.run()
+    handlers = {
+        "advance_state": handle_advance,
+        "inspect_state": handle_inspect,
+    }
+
+    finish = {"status": "accept"}
+    while True:
+        if forwarded:
+            if not result:
+                continue
+            else:
+                forwarded = False
+                finish["status"] = result
+                result = None
+
+        logger.info("Sending finish")
+        response = requests.post(rollup_server + "/finish", json=finish)
+        logger.info(f"Received finish status {response.status_code}")
+        if response.status_code == 202:
+            logger.info("No pending rollup request, trying again")
+        else:
+            rollup_request = response.json()
+            handler = handlers[rollup_request["request_type"]]
+            finish["status"] = handler(rollup_request["data"])
