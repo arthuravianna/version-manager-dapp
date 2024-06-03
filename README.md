@@ -2,13 +2,29 @@
 
 This repository is an experiment on how to create an upgradable Cartesi Rollup DApp. The proposal is that the upgradable DApp is executed as a child process of another DApp, referenced as the Version Manager. The Version Manager accepts special inputs that can provide information about the child DApp version or update it. So, the Version Manager intercepts all inputs to the DApp and verifies if they are for himself. Otherwise, the input is forwarded to the child DApp.
 
-## Tech
+## Architecture
+The architecture is composed of the Version Manager DApp, the Version Manager Server, and the Child DApp. The requirements to run the Version Manager DApp and Server are Python, Python's Flask, and Git.
 
 ### Version Manager DApp
+The Cartesi Machine generated has Git installed, and the Version Manager DApp utilizes it to manage the Child DApp's version. The Version Manager also has a version_manager.conf.json file where developers can define the first version tag and the developer list (the address list that are allowed to update the Child DApp). The Version Manager listens to the special routes listed below.
+
+#### Inspect
+
+1) `git/ls`: Returns the Child DApp file list.
+2) `git/tag`: Returns the versions tags for the Child DApp. Every time the DApp is updated it receives a tag with the pattern `v%y.%m.%d`.
+3) `git/log`: Returns the Child DApp updates history. Every commit returned by the log has the msg_sender of the commit as the Author and the Block timestamp as the date. *
+
+* Except the initial commit, because when building the machine we don't have access to a proper timestamp.
+
+#### Advance
+
+1) `{"version-manager": "update-dapp", "src": "$content"}`: This route updates the Child DApp code, it is a JSON where the `src` has the content as a `.tar.gz` file encoded as `base64`. Inside the DApp it is decoded, extracted, then executed.
 
 ### Version Manager Server
+This server is defined in the same Python file as the Version Manage DApp so that it can access the same variables straightforwardly. When the Version Manage DApp intercepts an input that it doesn't know how to process, it stores the input in a variable, sets a forwarded flag to True, and waits for the result. With this, when the Child DApp requests /finish, this input is served processing. After the Child DApp finishes the processing, it requests to /finish with an "accept" or "reject" that is forwarded to the HTTP API. Any notice, report, or voucher is immediately forwarded.
 
 ### Child DApp
+The Child DApp is a Cartesi Rollup DApp with only the backend code and an `entrypoint.sh` script that executes it.
 
 ## Test
 

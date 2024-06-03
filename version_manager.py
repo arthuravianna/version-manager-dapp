@@ -107,7 +107,7 @@ def run_child_dapp():
     global child_dapp_process, dapp_initialzied
     dapp_initialzied = False
 
-    child_dapp_process = subprocess.Popen("./src/entrypoint.sh", stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
+    child_dapp_process = subprocess.Popen("cd src && ROLLUP_HTTP_SERVER_URL='http://127.0.0.1:5000' ./entrypoint.sh", stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
 
 def wait_child_dapp():
     global dapp_initialzied
