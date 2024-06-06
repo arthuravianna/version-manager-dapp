@@ -107,11 +107,21 @@ def run_child_dapp():
     global child_dapp_process, dapp_initialzied
     dapp_initialzied = False
 
-    child_dapp_process = subprocess.Popen("cd src && ROLLUP_HTTP_SERVER_URL='http://127.0.0.1:5000' ./entrypoint.sh", stdout=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
+    child_dapp_process = subprocess.Popen("cd src && ROLLUP_HTTP_SERVER_URL='http://127.0.0.1:5000' ./entrypoint.sh", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
 
 def wait_child_dapp():
-    global dapp_initialzied
-    while not dapp_initialzied: pass
+    global dapp_initialzied, result
+    
+    code = None
+    while code is None and not dapp_initialzied:
+        code = child_dapp_process.poll()
+
+        if code:
+            err_msg = child_dapp_process.stderr.read().decode()
+            raise Exception(f"Error: Child DApp execution failed!\n{err_msg}")
+    
+    if code == 0:
+        raise Exception("Error: Child DApp terminated!")
 
 def stop_child_dapp():
     global child_dapp_process
@@ -159,10 +169,13 @@ def update_dapp(metadata, data_json):
             datetime.timezone(datetime.timedelta(hours=0))
         )
         date_str = d.strftime("%a %b %d %H:%M:%S %Y %z")
+        commit_msg = data_json.get("COMMIT_MSG")
+        if not commit_msg:
+            commit_msg = "new version"
         run_cmd([
             "git",
             "-c", f"user.name={metadata['msg_sender']}",
-            "commit", f"--date=\"{date_str}\"", "-m", "new version"
+            "commit", f"--date=\"{date_str}\"", "-m", commit_msg
         ])
         
         version = data_json.get("VERSION")
@@ -226,8 +239,7 @@ def handle_advance(data):
 
             version_manager_op = payload_json.get("version-manager")
             if version_manager_op and version_manager_op == "update-dapp":
-                update_dapp(data["metadata"], payload_json)
-                return "accept"
+                return update_dapp(data["metadata"], payload_json)
             else:
                 forward_advance(data)    
         except json.decoder.JSONDecodeError:
@@ -242,14 +254,11 @@ def handle_inspect(data):
         payload_str = hex2str(data["payload"])
 
         if len(payload_str) == 7 and payload_str[:7] == "git/tag":
-            git_tag_list()
-            return "accept"
+            return git_tag_list()
         elif len(payload_str) == 7 and payload_str[:7] == "git/log":
-            git_log()
-            return "accept"
+            return git_log()
         elif len(payload_str) == 6 and payload_str[:6] == "git/ls":
-            git_ls()
-            return "accept"
+            return git_ls()
         else:
             forward_inspect(data)
 
@@ -282,22 +291,22 @@ if __name__ == "__main__":
         "inspect_state": handle_inspect,
     }
 
-    finish = {"status": "accept"}
+    finish_json = {"status": "accept"}
     while True:
         if forwarded:
             if not result:
                 continue
             else:
                 forwarded = False
-                finish["status"] = result
+                finish_json["status"] = result
                 result = None
 
-        logger.info("Sending finish")
-        response = requests.post(rollup_server + "/finish", json=finish)
+        logger.info(f"Sending finish {finish_json}")
+        response = requests.post(rollup_server + "/finish", json=finish_json)
         logger.info(f"Received finish status {response.status_code}")
         if response.status_code == 202:
             logger.info("No pending rollup request, trying again")
         else:
             rollup_request = response.json()
             handler = handlers[rollup_request["request_type"]]
-            finish["status"] = handler(rollup_request["data"])
+            finish_json["status"] = handler(rollup_request["data"])
